@@ -559,7 +559,7 @@ make_node_script() {
 
     local tmp; tmp=$(mktemp /tmp/vllm_node_script_XXXXXX.sh)
     grep -v -- '--distributed-executor-backend' "$script_path" > "$tmp"
-    echo "$extra" >> "$tmp"
+    sed -i "$ s/$/ $extra/" "$tmp"
     chmod +x "$tmp"
     echo "$tmp"
 }
