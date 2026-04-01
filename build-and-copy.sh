@@ -92,9 +92,10 @@ add_copy_hosts() {
 copy_to_host() {
     local host="$1"
     echo "Loading image into ${SSH_USER}@${host}..."
+    ssh "${SSH_USER}@${host}" "command -v pigz >/dev/null 2>&1 || { echo 'pigz not found, installing...'; sudo apt-get install -y pigz; }"
     local host_copy_start host_copy_end host_copy_time
     host_copy_start=$(date +%s)
-    if cat "$TMP_IMAGE" | ssh "${SSH_USER}@${host}" "docker load"; then
+    if cat "$TMP_IMAGE" | ssh "${SSH_USER}@${host}" "pigz -сd | docker load"; then
         host_copy_end=$(date +%s)
         host_copy_time=$((host_copy_end - host_copy_start))
         printf "Copy to %s completed in %02d:%02d:%02d\n" "$host" $((host_copy_time/3600)) $((host_copy_time%3600/60)) $((host_copy_time%60))
@@ -682,9 +683,10 @@ if [ "${#COPY_HOSTS[@]}" -gt 0 ]; then
     fi
     COPY_START=$(date +%s)
 
-    TMP_IMAGE=$(mktemp -t vllm_image.XXXXXX)
+    command -v pigz >/dev/null 2>&1 || { echo "pigz not found, installing..."; sudo apt-get install -y pigz; }
+    TMP_IMAGE=$(mktemp -t vllm_image.XXXXXX.tgz)
     echo "Saving image locally to $TMP_IMAGE..."
-    docker save -o "$TMP_IMAGE" "$IMAGE_TAG"
+    docker save "$IMAGE_TAG" | pigz -c > "$TMP_IMAGE"
 
     if [ "$PARALLEL_COPY" = true ]; then
         PIDS=()
