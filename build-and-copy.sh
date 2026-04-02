@@ -666,27 +666,12 @@ if [ "${#COPY_HOSTS[@]}" -gt 0 ]; then
     echo "Saving and streaming image..."
 
     if [ "$PARALLEL_COPY" = true ]; then
-        # Build the tee command with pv pipes for each host
-        # Each pv gets its own pipe to ssh
-        case ${#COPY_HOSTS[@]} in
-            1)
-                docker save "$IMAGE_TAG" | pv -cN "${COPY_HOSTS[0]}" | ssh "${SSH_USER}@${COPY_HOSTS[0]}" "docker load"
-                ;;
-            2)
-                docker save "$IMAGE_TAG" | pv -cN TOTAL | tee \
-                    >(pv -cN "${COPY_HOSTS[0]}" | ssh "${SSH_USER}@${COPY_HOSTS[0]}" "docker load") \
-                    >(pv -cN "${COPY_HOSTS[1]}" | ssh "${SSH_USER}@${COPY_HOSTS[1]}" "docker load") \
-                    > /dev/null
-                ;;
-            *)
-                # For more than 2 hosts, build tee command dynamically
-                TEES=""
-                for host in "${COPY_HOSTS[@]}"; do
-                    TEES+=" >(pv -cN ${host} | ssh \"${SSH_USER}@${host}\" \"docker load\")"
-                done
-                eval "docker save \"$IMAGE_TAG\" | pv -cN TOTAL | tee $TEES > /dev/null"
-                ;;
-        esac
+        # Build tee command dynamically for any number of hosts
+        TEES=""
+        for host in "${COPY_HOSTS[@]}"; do
+            TEES+=" >(pv -cN ${host} | ssh \"${SSH_USER}@${host}\" \"docker load\")"
+        done
+        eval "docker save \"$IMAGE_TAG\" | pv -cN TOTAL | tee $TEES > /dev/null"
     else
         # Sequential copy - read image once and stream to each host
         for host in "${COPY_HOSTS[@]}"; do
