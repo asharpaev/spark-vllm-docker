@@ -17,7 +17,6 @@ VLLM_REF="main"
 VLLM_REF_SET=false
 FLASHINFER_REF="main"
 FLASHINFER_REF_SET=false
-TMP_IMAGE=""
 PARALLEL_COPY=false
 EXP_MXFP4=false
 VLLM_PRS=""
@@ -36,10 +35,6 @@ CLEANUP_MODE="false"
 CONFIG_FILE=""
 
 cleanup() {
-    if [ -n "$TMP_IMAGE" ] && [ -f "$TMP_IMAGE" ]; then
-        echo "Cleaning up temporary image $TMP_IMAGE"
-        rm -f "$TMP_IMAGE"
-    fi
     rm -f ./build-metadata.yaml
 }
 
@@ -87,22 +82,6 @@ add_copy_hosts() {
             fi
         done
     done
-}
-
-copy_to_host() {
-    local host="$1"
-    echo "Loading image into ${SSH_USER}@${host}..."
-    ssh "${SSH_USER}@${host}" "command -v pigz >/dev/null 2>&1 || { echo 'pigz not found, installing...'; sudo apt-get install -y pigz; }"
-    local host_copy_start host_copy_end host_copy_time
-    host_copy_start=$(date +%s)
-    if cat "$TMP_IMAGE" | ssh "${SSH_USER}@${host}" "pigz -сd | docker load"; then
-        host_copy_end=$(date +%s)
-        host_copy_time=$((host_copy_end - host_copy_start))
-        printf "Copy to %s completed in %02d:%02d:%02d\n" "$host" $((host_copy_time/3600)) $((host_copy_time%3600/60)) $((host_copy_time%60))
-    else
-        echo "Copy to $host failed."
-        return 1
-    fi
 }
 
 # try_download_wheels TAG PREFIX
@@ -683,30 +662,35 @@ if [ "${#COPY_HOSTS[@]}" -gt 0 ]; then
     fi
     COPY_START=$(date +%s)
 
-    command -v pigz >/dev/null 2>&1 || { echo "pigz not found, installing..."; sudo apt-get install -y pigz; }
-    TMP_IMAGE=$(mktemp -t vllm_image.XXXXXX.tgz)
-    echo "Saving image locally to $TMP_IMAGE..."
-    docker save "$IMAGE_TAG" | pigz -c > "$TMP_IMAGE"
+    command -v pv >/dev/null 2>&1 || { echo "pv not found, installing..."; sudo apt-get install -y pv; }
+    echo "Saving and streaming image..."
 
     if [ "$PARALLEL_COPY" = true ]; then
-        PIDS=()
-        for host in "${COPY_HOSTS[@]}"; do
-            copy_to_host "$host" &
-            PIDS+=($!)
-        done
-        COPY_FAILURE=0
-        for pid in "${PIDS[@]}"; do
-            if ! wait "$pid"; then
-                COPY_FAILURE=1
-            fi
-        done
-        if [ "$COPY_FAILURE" -ne 0 ]; then
-            echo "One or more copies failed."
-            exit 1
-        fi
+        # Build the tee command with pv pipes for each host
+        # Each pv gets its own pipe to ssh
+        case ${#COPY_HOSTS[@]} in
+            1)
+                docker save "$IMAGE_TAG" | pv -cN "${COPY_HOSTS[0]}" | ssh "${SSH_USER}@${COPY_HOSTS[0]}" "docker load"
+                ;;
+            2)
+                docker save "$IMAGE_TAG" | pv -cN TOTAL | tee \
+                    >(pv -cN "${COPY_HOSTS[0]}" | ssh "${SSH_USER}@${COPY_HOSTS[0]}" "docker load") \
+                    >(pv -cN "${COPY_HOSTS[1]}" | ssh "${SSH_USER}@${COPY_HOSTS[1]}" "docker load") \
+                    > /dev/null
+                ;;
+            *)
+                # For more than 2 hosts, build tee command dynamically
+                TEES=""
+                for host in "${COPY_HOSTS[@]}"; do
+                    TEES+=" >(pv -cN ${host} | ssh \"${SSH_USER}@${host}\" \"docker load\")"
+                done
+                eval "docker save \"$IMAGE_TAG\" | pv -cN TOTAL | tee $TEES > /dev/null"
+                ;;
+        esac
     else
+        # Sequential copy - read image once and stream to each host
         for host in "${COPY_HOSTS[@]}"; do
-            copy_to_host "$host"
+            docker save "$IMAGE_TAG" | pv -cN "$host" | ssh "${SSH_USER}@${host}" "docker load"
         done
     fi
 
